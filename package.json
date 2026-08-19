@@ -1,0 +1,50 @@
+{
+    "name": "anguantongguanbaodian",
+    "version": "1.0.3",
+    "description": "安管通关宝典",
+    "main": "main.js",
+    "author": "安管通关宝典",
+    "scripts": {
+        "start": "electron .",
+        "release:prepare": "node build-release.js",
+        "dist": "npm run release:prepare && electron-builder --win --config.directories.app=release-src"
+    },
+    "build": {
+        "appId": "com.agt.kaoshi",
+        "productName": "安管通关宝典",
+        "directories": {
+            "output": "dist"
+        },
+        "win": {
+            "target": [
+                {
+                    "target": "nsis",
+                    "arch": [
+                        "x64"
+                    ]
+                }
+            ],
+            "icon": "assets/icon.ico"
+        },
+        "nsis": {
+            "oneClick": false,
+            "allowToChangeInstallationDirectory": true,
+            "createDesktopShortcut": true,
+            "createStartMenuShortcut": true,
+            "shortcutName": "安管通关宝典",
+            "artifactName": "安管通关宝典-Setup-${version}.${ext}",
+            "installerLanguages": [
+                "zh_CN"
+            ],
+            "language": 2052
+        },
+        "files": [
+            "**/*"
+        ]
+    },
+    "devDependencies": {
+        "electron": "^38.0.0",
+        "electron-builder": "^26.15.3",
+        "javascript-obfuscator": "^4.1.1"
+    }
+}
