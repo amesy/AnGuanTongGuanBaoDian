@@ -248,7 +248,7 @@
 
         document
             .querySelectorAll(
-                '.bj-form-item'
+                '.bj-form-item, .el-form-item'
             )
             .forEach(
                 element => {
@@ -259,19 +259,23 @@
                         );
 
 
+                    // 只处理标签文本为"组织ID"的表单项
+                    if (
+                        !label ||
+                        label.textContent.trim() !== '组织ID'
+                    ) {
+                        return;
+                    }
+
+
                     const input =
                         element.querySelector(
                             'input[placeholder="请输入您的组织ID"]'
                         );
 
 
-                    if (
-                        label &&
-                        label.textContent
-                            .trim() ===
-                        '组织ID' &&
-                        input
-                    ) {
+                    // 必须同时满足：标签是"组织ID" 且 input placeholder 匹配
+                    if (input) {
 
                         element.style.setProperty(
                             'display',
@@ -653,6 +657,17 @@
                     HTMLTextAreaElement
                 ) {
 
+                    // 跳过账号密码输入框，防止破坏 Vue 绑定
+                    const isLoginInput =
+                        element.type === 'password' ||
+                        (element.placeholder &&
+                            (element.placeholder.includes('账号') ||
+                             element.placeholder.includes('密码')));
+
+                    if (isLoginInput) {
+                        return;
+                    }
+
                     if (
                         typeof element.value ===
                         'string'
@@ -713,6 +728,9 @@
 
     function cleanPage() {
 
+        // 确保遮罩层已被移除（防止弹窗关闭后遮罩残留）
+        ensureShieldRemoved();
+
         hideCopyright();
 
         hideLoginLinks();
@@ -729,13 +747,173 @@
 
         cleanPageTitle();
 
-        replaceTextNodes(
-            document.body
-        );
+        // 文本和属性替换可能会破坏输入框的绑定
+        // 只在非登录页面执行
+        if (!isLoginPage()) {
 
-        replaceAttributes(
-            document.body
-        );
+            replaceTextNodes(
+                document.body
+            );
+
+            replaceAttributes(
+                document.body
+            );
+
+        }
+
+        // 保护登录表单输入框必须在最后执行
+        // 确保之前的操作不会影响输入框
+        protectLoginInputs();
+
+    }
+
+
+    // ==================================================
+    // 判断是否为登录页面
+    // ==================================================
+
+    function isLoginPage() {
+
+        // 检查页面是否包含登录表单
+        const hasLoginForm =
+            document.querySelector(
+                'input[type="password"]'
+            ) !== null;
+
+        // 检查 URL 路径
+        const path = window.location.pathname;
+        const isLoginPath =
+            path === '/' ||
+            path.includes('/login') ||
+            path.includes('/student');
+
+        return hasLoginForm && isLoginPath;
+
+    }
+
+
+    // ==================================================
+    // 确保遮罩层已移除
+    // ==================================================
+
+    function ensureShieldRemoved() {
+
+        // 如果页面已经准备好，强制删除任何残留的遮罩
+        if (pageReady) {
+
+            const shield =
+                document.getElementById(
+                    'agt-page-shield'
+                );
+
+            if (shield) {
+
+                console.log(
+                    '检测到残留遮罩，正在移除...'
+                );
+
+                shield.remove();
+
+            }
+
+
+            // 同时确保 loading 类已移除
+            if (document.body) {
+
+                document.body.classList.remove(
+                    'agt-page-loading'
+                );
+
+            }
+
+            if (document.documentElement) {
+
+                document.documentElement.classList.remove(
+                    'agt-page-loading'
+                );
+
+            }
+
+        }
+
+    }
+
+
+    // ==================================================
+    // 保护登录输入框
+    // ==================================================
+
+    function protectLoginInputs() {
+
+        // 确保账号、密码输入框始终可见可用
+        document
+            .querySelectorAll(
+                'input[type="text"], input[type="password"], input[placeholder*="账号"], input[placeholder*="密码"]'
+            )
+            .forEach(
+                input => {
+
+                    const formItem =
+                        input.closest(
+                            '.el-form-item, .bj-form-item, .form-item'
+                        );
+
+                    if (formItem) {
+
+                        // 检查是否是组织ID字段（通过 placeholder）
+                        const isOrgId =
+                            input.placeholder &&
+                            input.placeholder.includes('组织ID');
+
+                        // 如果不是组织ID，确保可见
+                        if (!isOrgId) {
+
+                            const currentDisplay =
+                                formItem.style.display;
+
+                            if (
+                                currentDisplay === 'none'
+                            ) {
+
+                                formItem.style.removeProperty(
+                                    'display'
+                                );
+
+                            }
+
+                            // 确保输入框本身可用
+                            if (input.disabled) {
+                                input.disabled = false;
+                            }
+
+                            // 确保输入框可见
+                            if (input.style.display === 'none') {
+                                input.style.removeProperty('display');
+                            }
+
+                            if (input.style.visibility === 'hidden') {
+                                input.style.removeProperty('visibility');
+                            }
+
+                            // 确保 z-index 足够高
+                            input.style.setProperty(
+                                'position',
+                                'relative',
+                                ''
+                            );
+
+                            input.style.setProperty(
+                                'z-index',
+                                '1',
+                                ''
+                            );
+
+                        }
+
+                    }
+
+                }
+            );
 
     }
 
@@ -876,6 +1054,9 @@
     // 不再因为普通 DOM 变化重新显示页面遮罩。
     // 否则登录失败弹窗、关闭弹窗、输入框变化等
     // 都可能触发遮罩，导致输入框无法继续操作。
+    //
+    // 重要：在登录页面，完全跳过 MutationObserver 的 cleanPage 调用
+    // 避免弹窗关闭时破坏输入框，只依赖定时器清理。
     // ==================================================
 
     const observer =
@@ -892,6 +1073,17 @@
                 //
                 // 这样可以避免登录失败后输入框被遮罩挡住。
 
+                // 在登录页面，完全跳过 DOM 变化时的清理
+                // 避免弹窗关闭时破坏输入框
+                if (isLoginPage()) {
+
+                    // 只移除遮罩，不执行其他清理
+                    ensureShieldRemoved();
+
+                    return;
+
+                }
+
                 cleanPage();
 
             }
@@ -903,6 +1095,19 @@
         if (
             !document.documentElement
         ) {
+
+            return;
+
+        }
+
+
+        // 在登录页面完全禁用 MutationObserver
+        // 只依赖定时器进行清理
+        if (isLoginPage()) {
+
+            console.log(
+                '登录页面：已禁用 MutationObserver，避免干扰输入框'
+            );
 
             return;
 
@@ -943,16 +1148,28 @@
     //
     // 每 2 秒执行一次页面清理，确保动态内容也被处理。
     // 相比 1 秒执行一次，可以降低 CPU 使用率。
+    //
+    // 在登录页面，完全禁用定时清理，避免干扰输入框。
     // ==================================================
 
-    setInterval(
-        () => {
+    if (!isLoginPage()) {
 
-            cleanPage();
+        setInterval(
+            () => {
 
-        },
-        2000
-    );
+                cleanPage();
+
+            },
+            2000
+        );
+
+    } else {
+
+        console.log(
+            '登录页面：已禁用定时清理，避免干扰输入框'
+        );
+
+    }
 
 
     // ==================================================
