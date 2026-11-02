@@ -1,1270 +1,458 @@
 (() => {
-
     'use strict';
 
-
-    // ==================================================
-    // 页面防闪烁系统
-    // ==================================================
-
+    const { ipcRenderer } = require('electron');
+    const allowDevTools = process.argv.includes('--agt-devtools');
+    const brand = '安管通关宝典';
+    const blockedBrandPattern = /考试宝(?:企业版)?[-－—–|｜\s]*可以导入题库的在线组卷刷题学习平台|可以导入题库的在线组卷刷题学习平台|考试宝企业版|考试宝/g;
+    const ignoredTextContainers = 'script, style, noscript, textarea, input, [contenteditable]';
+    const ignoredAttributeContainers = 'script, style, noscript, textarea, [contenteditable]';
+    const relevantContainers = '.footer-top, .forget, .bj-form-item, .el-form-item, a, .logo-tip, .el-tree-node__content';
     let pageReady = false;
     let revealTimer = null;
+    let initialRevealTimer = null;
+    let cleanTimer = null;
+    let observing = false;
+    let lastLoginMode = null;
+    let loginFailureDetected = false;
+    let loginErrors = [];
+    const pendingRoots = new Set();
 
+    function findElements(root, selector) {
+        if (!root) return [];
+        const elements = Array.from(root.querySelectorAll?.(selector) || []);
+        if (root.nodeType === Node.ELEMENT_NODE && root.matches(selector)) elements.unshift(root);
+        return elements;
+    }
 
-    // --------------------------------------------------
-    // 尽可能早地隐藏页面
-    // --------------------------------------------------
+    function hideElement(element) {
+        if (element.style.getPropertyValue('display') !== 'none' ||
+            element.style.getPropertyPriority('display') !== 'important') {
+            element.style.setProperty('display', 'none', 'important');
+        }
+    }
 
     function installPageProtection() {
-
-        const style =
-            document.createElement('style');
-
-        style.id =
-            'agt-page-protection-style';
-
-        style.textContent = `
-
-            html.agt-page-loading {
-                visibility: hidden !important;
-                background: #ffffff !important;
-            }
-
-            body.agt-page-loading {
-                visibility: hidden !important;
-                background: #ffffff !important;
-            }
-
-            #agt-page-shield {
-
-                position: fixed !important;
-
-                left: 0 !important;
-                top: 0 !important;
-                right: 0 !important;
-                bottom: 0 !important;
-
-                width: 100vw !important;
-                height: 100vh !important;
-
-                z-index: 2147483647 !important;
-
-                background: #ffffff !important;
-
-                display: flex !important;
-
-                align-items: center !important;
-                justify-content: center !important;
-
-                pointer-events: all !important;
-
-                font-family:
-                    "Microsoft YaHei",
-                    "Segoe UI",
-                    sans-serif !important;
-
-            }
-
-            #agt-page-shield-text {
-
-                font-size: 20px !important;
-
-                color: #333333 !important;
-
-                user-select: none !important;
-
-            }
-
-        `;
-
-
-        // 尽早插入 head
-        if (
-            document.head
-        ) {
-
-            document.head.appendChild(
-                style
-            );
-
-        } else if (
-            document.documentElement
-        ) {
-
-            document.documentElement
-                .appendChild(style);
-
+        if (!document.documentElement) return;
+        if (!document.getElementById('agt-page-protection-style')) {
+            const style = document.createElement('style');
+            style.id = 'agt-page-protection-style';
+            style.textContent = `
+                html.agt-page-loading, body.agt-page-loading {
+                    visibility: hidden !important;
+                    background: #fff !important;
+                }
+                #agt-page-shield {
+                    position: fixed !important; inset: 0 !important;
+                    width: 100vw !important; height: 100vh !important;
+                    z-index: 2147483647 !important; background: #fff !important;
+                    pointer-events: all !important;
+                }
+                html.agt-login-error-editable .v-modal,
+                html.agt-login-error-editable .el-loading-mask,
+                html.agt-login-error-editable .el-message-box__wrapper,
+                html.agt-login-error-editable .el-dialog__wrapper {
+                    pointer-events: none !important;
+                }
+            `;
+            (document.head || document.documentElement).appendChild(style);
         }
-
-
-        // 给 html 加载状态
-        if (
-            document.documentElement
-        ) {
-
-            document.documentElement
-                .classList
-                .add(
-                    'agt-page-loading'
-                );
-
+        if (!pageReady) {
+            document.documentElement.classList.add('agt-page-loading');
+            document.body?.classList.add('agt-page-loading');
         }
-
-
-        // body 如果已经存在，也加状态
-        if (
-            document.body
-        ) {
-
-            document.body
-                .classList
-                .add(
-                    'agt-page-loading'
-                );
-
-        }
-
     }
-
-
-    installPageProtection();
-
-
-    // ==================================================
-    // 创建遮罩
-    // ==================================================
 
     function showPageShield() {
-
-        if (
-            document.getElementById(
-                'agt-page-shield'
-            )
-        ) {
-            return;
-        }
-
-        const shield =
-            document.createElement('div');
-
-        shield.id =
-            'agt-page-shield';
-
-        const text =
-            document.createElement('div');
-
-        text.id =
-            'agt-page-shield-text';
-
-        text.textContent =
-            '';
-
-        shield.appendChild(
-            text
-        );
-
-        if (document.body) {
-
-            document.body.appendChild(
-                shield
-            );
-
-        }
-
+        if (!document.body || document.getElementById('agt-page-shield')) return;
+        const shield = document.createElement('div');
+        shield.id = 'agt-page-shield';
+        document.body.appendChild(shield);
     }
-
-
-    // ==================================================
-    // 隐藏版权
-    // ==================================================
-
-    function hideCopyright() {
-
-        document
-            .querySelectorAll(
-                '.footer-top'
-            )
-            .forEach(
-                element => {
-
-                    element.style.setProperty(
-                        'display',
-                        'none',
-                        'important'
-                    );
-
-                }
-            );
-
-    }
-
-
-    // ==================================================
-    // 隐藏登录页注册 / 忘记密码
-    // ==================================================
-
-    function hideLoginLinks() {
-
-        document
-            .querySelectorAll(
-                '.forget'
-            )
-            .forEach(
-                element => {
-
-                    const text =
-                        element.textContent ||
-                        '';
-
-
-                    if (
-                        text.includes(
-                            '注册账号'
-                        ) ||
-                        text.includes(
-                            '忘记密码'
-                        )
-                    ) {
-
-                        element.style.setProperty(
-                            'display',
-                            'none',
-                            'important'
-                        );
-
-                    }
-
-                }
-            );
-
-    }
-
-
-    // ==================================================
-    // 隐藏组织 ID
-    // ==================================================
-
-    function hideOrganizationId() {
-
-        document
-            .querySelectorAll(
-                '.bj-form-item, .el-form-item'
-            )
-            .forEach(
-                element => {
-
-                    const label =
-                        element.querySelector(
-                            '.el-form-item__label'
-                        );
-
-
-                    // 只处理标签文本为"组织ID"的表单项
-                    if (
-                        !label ||
-                        label.textContent.trim() !== '组织ID'
-                    ) {
-                        return;
-                    }
-
-
-                    const input =
-                        element.querySelector(
-                            'input[placeholder="请输入您的组织ID"]'
-                        );
-
-
-                    // 必须同时满足：标签是"组织ID" 且 input placeholder 匹配
-                    if (input) {
-
-                        element.style.setProperty(
-                            'display',
-                            'none',
-                            'important'
-                        );
-
-
-                        const parent =
-                            element.parentElement;
-
-
-                        if (
-                            parent
-                        ) {
-
-                            const tip =
-                                parent.querySelector(
-                                    'p'
-                                );
-
-
-                            if (
-                                tip &&
-                                tip.textContent
-                                    .includes(
-                                        '不知道什么是组织ID'
-                                    )
-                            ) {
-
-                                tip.style.setProperty(
-                                    'display',
-                                    'none',
-                                    'important'
-                                );
-
-                            }
-
-                        }
-
-                    }
-
-                }
-            );
-
-    }
-
-    // ==================================================
-    // 隐藏侧边栏指定导航
-    // ==================================================
-
-    function hideSidebarItems() {
-
-        const hiddenPaths = [
-            '/score/',
-            '/notice/',
-            '/contact/'
-        ];
-
-        document
-            .querySelectorAll('a')
-            .forEach(link => {
-
-                const href =
-                    link.getAttribute('href') || '';
-
-                const text =
-                    link.textContent.trim();
-
-                const shouldHide =
-                    hiddenPaths.some(path => {
-
-                        return href === path;
-
-                    }) ||
-                    text.includes('我的积分') ||
-                    text.includes('公告通知') ||
-                    text.includes('联系我们');
-
-                if (shouldHide) {
-
-                    // 隐藏整个 <a>
-                    link.style.setProperty(
-                        'display',
-                        'none',
-                        'important'
-                    );
-
-                }
-
-            });
-
-    }
-
-    // ==================================================
-    // 隐藏账号信息中的“绑定手机”和“修改密码”
-    // ==================================================
-
-    function hideAccountOptions() {
-
-        document
-            .querySelectorAll('.el-form-item')
-            .forEach(element => {
-
-                const label =
-                    element.querySelector(
-                        '.el-form-item__label'
-                    );
-
-                if (!label) {
-                    return;
-                }
-
-                const text =
-                    label.textContent.trim();
-
-                if (
-                    text === '手机号码' ||
-                    text === '修改密码'
-                ) {
-
-                    element.style.setProperty(
-                        'display',
-                        'none',
-                        'important'
-                    );
-
-                }
-
-            });
-
-    }
-
-    // ==================================================
-    // 隐藏“学员专用”
-    // ==================================================
-
-    function hideLogoTip() {
-
-        document
-            .querySelectorAll('.logo-tip')
-            .forEach(element => {
-
-                if (
-                    element.textContent.trim() === '学员专用'
-                ) {
-
-                    element.style.setProperty(
-                        'display',
-                        'none',
-                        'important'
-                    );
-
-                }
-
-            });
-
-    }
-
-    // ==================================================
-    // 隐藏“未分类”所在的整个树节点
-    // ==================================================
-
-    function hideUnclassified() {
-
-        document
-            .querySelectorAll('.custom-tree-label')
-            .forEach(element => {
-
-                if (
-                    element.textContent.trim() === '未分类'
-                ) {
-
-                    const treeNode =
-                        element.closest(
-                            '.el-tree-node__content'
-                        );
-
-                    if (treeNode) {
-
-                        treeNode.style.setProperty(
-                            'display',
-                            'none',
-                            'important'
-                        );
-
-                    }
-
-                }
-
-            });
-
-    }
-
-    // ==================================================
-    // 替换品牌文字
-    // ==================================================
-
-    function replaceBrandText(
-        text
-    ) {
-
-        if (
-            !text ||
-            typeof text !== 'string'
-        ) {
-
-            return text;
-
-        }
-
-
-        return text
-            .replace(
-                /考试宝企业版/g,
-                '安管通关宝典'
-            )
-            .replace(
-                /考试宝/g,
-                '安管通关宝典'
-            );
-
-    }
-
-
-    // ==================================================
-    // 替换普通文本
-    // ==================================================
-
-    function replaceTextNodes(
-        root
-    ) {
-
-        if (
-            !root
-        ) {
-
-            return;
-
-        }
-
-
-        const walker =
-            document.createTreeWalker(
-                root,
-                NodeFilter.SHOW_TEXT
-            );
-
-
-        const nodes = [];
-
-
-        let node;
-
-
-        while (
-            node =
-            walker.nextNode()
-        ) {
-
-            nodes.push(
-                node
-            );
-
-        }
-
-
-        nodes.forEach(
-            textNode => {
-
-                const oldText =
-                    textNode.nodeValue;
-
-
-                const newText =
-                    replaceBrandText(
-                        oldText
-                    );
-
-
-                if (
-                    newText !==
-                    oldText
-                ) {
-
-                    textNode.nodeValue =
-                        newText;
-
-                }
-
-            }
-        );
-
-    }
-
-
-    // ==================================================
-    // 替换 HTML 属性
-    // ==================================================
-
-    function replaceAttributes(
-        root
-    ) {
-
-        if (
-            !root
-        ) {
-
-            return;
-
-        }
-
-
-        const elements =
-            root.querySelectorAll
-                ? root.querySelectorAll('*')
-                : [];
-
-
-        elements.forEach(
-            element => {
-
-                [
-                    'title',
-                    'placeholder',
-                    'aria-label',
-                    'alt'
-                ]
-                    .forEach(
-                        attribute => {
-
-                            if (
-                                !element.hasAttribute(
-                                    attribute
-                                )
-                            ) {
-
-                                return;
-
-                            }
-
-
-                            const oldValue =
-                                element.getAttribute(
-                                    attribute
-                                );
-
-
-                            const newValue =
-                                replaceBrandText(
-                                    oldValue
-                                );
-
-
-                            if (
-                                newValue !==
-                                oldValue
-                            ) {
-
-                                element.setAttribute(
-                                    attribute,
-                                    newValue
-                                );
-
-                            }
-
-                        }
-                    );
-
-
-                // ----------------------------------
-                // input / textarea
-                // ----------------------------------
-
-                if (
-                    element instanceof
-                    HTMLInputElement ||
-                    element instanceof
-                    HTMLTextAreaElement
-                ) {
-
-                    // 跳过账号密码输入框，防止破坏 Vue 绑定
-                    const isLoginInput =
-                        element.type === 'password' ||
-                        (element.placeholder &&
-                            (element.placeholder.includes('账号') ||
-                             element.placeholder.includes('密码')));
-
-                    if (isLoginInput) {
-                        return;
-                    }
-
-                    if (
-                        typeof element.value ===
-                        'string'
-                    ) {
-
-                        const newValue =
-                            replaceBrandText(
-                                element.value
-                            );
-
-
-                        if (
-                            newValue !==
-                            element.value
-                        ) {
-
-                            element.value =
-                                newValue;
-
-                        }
-
-                    }
-
-                }
-
-            }
-        );
-
-    }
-
-
-    // ==================================================
-    // 修改网页 Title
-    // ==================================================
-
-    function cleanPageTitle() {
-
-        const targetTitle =
-            '安管通关宝典';
-
-
-        if (
-            document.title !==
-            targetTitle
-        ) {
-
-            document.title =
-                targetTitle;
-
-        }
-
-    }
-
-
-    // ==================================================
-    // 页面统一清理
-    // ==================================================
-
-    function cleanPage() {
-
-        // 确保遮罩层已被移除（防止弹窗关闭后遮罩残留）
-        ensureShieldRemoved();
-
-        hideCopyright();
-
-        hideLoginLinks();
-
-        hideOrganizationId();
-
-        hideSidebarItems();
-
-        hideAccountOptions();
-
-        hideLogoTip();
-
-        hideUnclassified();
-
-        cleanPageTitle();
-
-        // 文本和属性替换可能会破坏输入框的绑定
-        // 只在非登录页面执行
-        if (!isLoginPage()) {
-
-            replaceTextNodes(
-                document.body
-            );
-
-            replaceAttributes(
-                document.body
-            );
-
-        }
-
-        // 保护登录表单输入框必须在最后执行
-        // 确保之前的操作不会影响输入框
-        protectLoginInputs();
-
-    }
-
-
-    // ==================================================
-    // 判断是否为登录页面
-    // ==================================================
-
-    function isLoginPage() {
-
-        // 检查页面是否包含登录表单
-        const hasLoginForm =
-            document.querySelector(
-                'input[type="password"]'
-            ) !== null;
-
-        // 检查 URL 路径
-        const path = window.location.pathname;
-        const isLoginPath =
-            path === '/' ||
-            path.includes('/login') ||
-            path.includes('/student');
-
-        return hasLoginForm && isLoginPath;
-
-    }
-
-
-    // ==================================================
-    // 确保遮罩层已移除
-    // ==================================================
 
     function ensureShieldRemoved() {
-
-        // 如果页面已经准备好，强制删除任何残留的遮罩
-        if (pageReady) {
-
-            const shield =
-                document.getElementById(
-                    'agt-page-shield'
-                );
-
-            if (shield) {
-
-                console.log(
-                    '检测到残留遮罩，正在移除...'
-                );
-
-                shield.remove();
-
+        if (!pageReady) return;
+        document.getElementById('agt-page-shield')?.remove();
+        [document.documentElement, document.body].forEach(element => {
+            if (element?.classList.contains('agt-page-loading')) {
+                element.classList.remove('agt-page-loading');
             }
+        });
+    }
 
-
-            // 同时确保 loading 类已移除
-            if (document.body) {
-
-                document.body.classList.remove(
-                    'agt-page-loading'
-                );
-
+    function hidePageOptions(root) {
+        findElements(root, '.footer-top').forEach(hideElement);
+        findElements(root, '.forget').forEach(element => {
+            if (/注册账号|忘记密码/.test(element.textContent)) hideElement(element);
+        });
+        findElements(root, '.bj-form-item, .el-form-item').forEach(element => {
+            const label = element.querySelector('.el-form-item__label')?.textContent.trim();
+            if (element.matches('.el-form-item') && (label === '手机号码' || label === '修改密码')) {
+                hideElement(element);
             }
-
-            if (document.documentElement) {
-
-                document.documentElement.classList.remove(
-                    'agt-page-loading'
-                );
-
+            if (label === '组织ID' && element.querySelector('input[placeholder="请输入您的组织ID"]')) {
+                hideElement(element);
+                const tip = element.parentElement?.querySelector('p');
+                if (tip?.textContent.includes('不知道什么是组织ID')) hideElement(tip);
             }
+        });
+        findElements(root, 'a').forEach(link => {
+            if (['/score/', '/notice/', '/contact/'].includes(link.getAttribute('href')) ||
+                /我的积分|公告通知|联系我们/.test(link.textContent)) hideElement(link);
+        });
+        findElements(root, '.logo-tip').forEach(element => {
+            if (element.textContent.trim() === '学员专用') hideElement(element);
+        });
+        findElements(root, '.custom-tree-label').forEach(element => {
+            if (element.textContent.trim() === '未分类') {
+                const treeNode = element.closest('.el-tree-node__content');
+                if (treeNode) hideElement(treeNode);
+            }
+        });
+    }
 
+    function replaceBrandText(value) {
+        return value.replace(blockedBrandPattern, match => match.includes('考试宝') ? brand : '');
+    }
+
+    function cleanHeadBranding() {
+        if (!document.head) return;
+        let titles = findElements(document.head, 'title');
+        if (titles.length === 0) {
+            const title = document.createElement('title');
+            document.head.appendChild(title);
+            titles = [title];
         }
-
+        titles.forEach(title => {
+            if (title.textContent !== brand) title.textContent = brand;
+        });
+        findElements(document.head,
+            'meta[name="description"], meta[name="keywords"], meta[name="application-name"], ' +
+            'meta[property="og:title"], meta[property="og:description"], ' +
+            'meta[name="twitter:title"], meta[name="twitter:description"]').forEach(meta => {
+            const value = meta.getAttribute('content');
+            if (value !== null) {
+                const next = replaceBrandText(value);
+                if (next !== value) meta.setAttribute('content', next);
+            }
+        });
     }
 
+    function replaceTextNodes(root) {
+        while (root?.parentElement && /^(SPAN|B|STRONG|I|EM|SMALL)$/.test(root.tagName)) {
+            root = root.parentElement;
+        }
+        if (!root || root.closest?.(ignoredTextContainers)) return;
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        const segments = [];
+        const text = [];
+        let length = 0;
+        let node;
+        while ((node = walker.nextNode())) {
+            if (node.parentElement?.closest(ignoredTextContainers)) {
+                text.push('\0');
+                length += 1;
+                continue;
+            }
+            segments.push({ node, start: length, end: length + node.nodeValue.length });
+            text.push(node.nodeValue);
+            length += node.nodeValue.length;
+        }
+        // 按合并文本定位，但只改写原文本节点，可处理被 span 等标签拆开的品牌词。
+        const edits = [];
+        let cursor = 0;
+        for (const match of text.join('').matchAll(blockedBrandPattern)) {
+            const end = match.index + match[0].length;
+            while (segments[cursor].end <= match.index) cursor += 1;
+            const first = cursor;
+            while (segments[cursor].end < end) cursor += 1;
+            edits.push({ first, last: cursor, start: match.index - segments[first].start,
+                end: end - segments[cursor].start, value: match[0].includes('考试宝') ? brand : '' });
+        }
+        for (const edit of edits.reverse()) {
+            const first = segments[edit.first].node;
+            const last = segments[edit.last].node;
+            if (first === last) {
+                first.nodeValue = first.nodeValue.slice(0, edit.start) + edit.value + first.nodeValue.slice(edit.end);
+            } else {
+                first.nodeValue = first.nodeValue.slice(0, edit.start) + edit.value;
+                for (let index = edit.first + 1; index < edit.last; index++) segments[index].node.nodeValue = '';
+                last.nodeValue = last.nodeValue.slice(edit.end);
+            }
+        }
+    }
 
-    // ==================================================
-    // 保护登录输入框
-    // ==================================================
-
-    function protectLoginInputs() {
-
-        // 确保账号、密码输入框始终可见可用
-        document
-            .querySelectorAll(
-                'input[type="text"], input[type="password"], input[placeholder*="账号"], input[placeholder*="密码"]'
-            )
-            .forEach(
-                input => {
-
-                    const formItem =
-                        input.closest(
-                            '.el-form-item, .bj-form-item, .form-item'
-                        );
-
-                    if (formItem) {
-
-                        // 检查是否是组织ID字段（通过 placeholder）
-                        const isOrgId =
-                            input.placeholder &&
-                            input.placeholder.includes('组织ID');
-
-                        // 如果不是组织ID，确保可见
-                        if (!isOrgId) {
-
-                            const currentDisplay =
-                                formItem.style.display;
-
-                            if (
-                                currentDisplay === 'none'
-                            ) {
-
-                                formItem.style.removeProperty(
-                                    'display'
-                                );
-
-                            }
-
-                            // 确保输入框本身可用
-                            if (input.disabled) {
-                                input.disabled = false;
-                            }
-
-                            // 确保输入框可见
-                            if (input.style.display === 'none') {
-                                input.style.removeProperty('display');
-                            }
-
-                            if (input.style.visibility === 'hidden') {
-                                input.style.removeProperty('visibility');
-                            }
-
-                            // 确保 z-index 足够高
-                            input.style.setProperty(
-                                'position',
-                                'relative',
-                                ''
-                            );
-
-                            input.style.setProperty(
-                                'z-index',
-                                '1',
-                                ''
-                            );
-
-                        }
-
-                    }
-
+    function replaceAttributes(root) {
+        findElements(root, '[title], [placeholder], [aria-label], [alt]').forEach(element => {
+            if (element.closest(ignoredAttributeContainers)) return;
+            for (const attribute of ['title', 'placeholder', 'aria-label', 'alt']) {
+                const value = element.getAttribute(attribute);
+                if (value !== null) {
+                    const next = replaceBrandText(value);
+                    if (next !== value) element.setAttribute(attribute, next);
                 }
-            );
-
+            }
+        });
+        // 不改写 input/textarea.value，也不替换可编辑内容，保留网页的数据绑定。
     }
 
+    function isLoginPage() {
+        const pathname = window.location.pathname;
+        return (pathname === '/' || /\/(login|student)(\/|$)/.test(pathname)) &&
+            document.querySelector('input[type="password"]') !== null;
+    }
 
-    // ==================================================
-    // 页面最终显示
-    // ==================================================
+    function getLoginInputs() {
+        if (!isLoginPage()) return [];
+        const password = document.querySelector('input[type="password"]');
+        const form = password.closest('form, .el-form, .login-form') || document;
+        return findElements(form, 'input[type="text"], input[type="password"]')
+            .filter(input => !input.placeholder.includes('组织ID'));
+    }
+
+    function isLoginElementVisible(element) {
+        const style = window.getComputedStyle(element);
+        return style.display !== 'none' && style.visibility !== 'hidden' &&
+            element.getClientRects().length > 0;
+    }
+
+    function hasActiveLoginDialog() {
+        return findElements(document, '.el-message-box__wrapper, .el-dialog__wrapper, dialog[open]')
+            .some(wrapper => {
+                const dialog = wrapper.matches('dialog') ? wrapper :
+                    wrapper.querySelector('.el-message-box, .el-dialog');
+                return dialog && isLoginElementVisible(wrapper) && isLoginElementVisible(dialog);
+            });
+    }
+
+    function updateLoginRecovery() {
+        if (!isLoginPage()) {
+            loginFailureDetected = false;
+            loginErrors = [];
+            if (document.documentElement?.classList.contains('agt-login-error-editable')) {
+                document.documentElement.classList.remove('agt-login-error-editable');
+            }
+            return;
+        }
+        const errors = findElements(document,
+            '.el-message--error, .el-notification.error, .el-alert--error, ' +
+            '.el-form-item__error, .el-message-box__message')
+            .filter(isLoginElementVisible)
+            .map(element => ({ element, text: element.textContent }));
+        if (errors.some(error => !loginErrors.some(previous =>
+            previous.element === error.element && previous.text === error.text))) {
+            loginFailureDetected = true;
+        }
+        loginErrors = errors;
+        const canEdit = loginFailureDetected && !hasActiveLoginDialog();
+        if (document.documentElement.classList.contains('agt-login-error-editable') !== canEdit) {
+            document.documentElement.classList.toggle('agt-login-error-editable', canEdit);
+        }
+        if (canEdit) {
+            ensureShieldRemoved();
+            getLoginInputs().forEach(input => {
+                if (input.disabled) input.disabled = false;
+                if (input.readOnly) input.readOnly = false;
+            });
+        }
+    }
+
+    function resetLoginRecovery() {
+        if (!isLoginPage()) return;
+        loginFailureDetected = false;
+        if (document.documentElement.classList.contains('agt-login-error-editable')) {
+            document.documentElement.classList.remove('agt-login-error-editable');
+        }
+    }
+
+    function restoreLoginKeyboardFocus(event) {
+        if (!event.isTrusted || (event.type === 'pointerdown' && event.button !== 0) ||
+            !getLoginInputs().includes(event.target) || hasActiveLoginDialog()) return;
+        updateLoginRecovery();
+        if (!document.hasFocus()) ipcRenderer.send('agt:restore-login-focus');
+    }
+
+    function cleanPage(root = document.body) {
+        ensureShieldRemoved();
+        hidePageOptions(root);
+        cleanHeadBranding();
+        replaceTextNodes(root);
+        replaceAttributes(root);
+    }
+
+    const observerOptions = {
+        childList: true, subtree: true, characterData: true, attributes: true,
+        attributeFilter: ['class', 'style', 'disabled', 'readonly', 'hidden',
+            'title', 'placeholder', 'aria-label', 'alt', 'href']
+    };
+    const observer = new MutationObserver(records => {
+        withObserverPaused(updateLoginRecovery);
+        const modeChanged = lastLoginMode !== isLoginPage();
+        lastLoginMode = isLoginPage();
+        if (modeChanged) queueRoot(document.body);
+        else records.forEach(record => {
+            if (record.type === 'childList') {
+                record.addedNodes.forEach(queueRoot);
+                const container = record.target.closest?.(relevantContainers);
+                if (container) queueRoot(container);
+            } else {
+                queueRoot(record.target);
+            }
+        });
+        // 品牌文字在本轮 DOM 变化后立即处理，不等待普通页面清理的合并定时器。
+        withObserverPaused(() => {
+            const roots = Array.from(pendingRoots).filter(root => root?.isConnected);
+            roots.filter(root => !roots.some(other => other !== root && other.contains(root)))
+                .forEach(root => {
+                    replaceTextNodes(root);
+                    replaceAttributes(root);
+                });
+        });
+        scheduleClean();
+    });
+
+    function withObserverPaused(action) {
+        if (observing) observer.disconnect();
+        try {
+            action();
+        } catch (error) {
+            console.error('页面处理失败:', error.message);
+        } finally {
+            if (observing) observer.observe(document.documentElement, observerOptions);
+        }
+    }
+
+    function queueRoot(node) {
+        if (!node) return;
+        const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+        if (!element || !element.isConnected) return;
+        const root = element.closest(relevantContainers) || element;
+        if (pendingRoots.size > 32 || root === document.documentElement) {
+            pendingRoots.clear();
+            pendingRoots.add(document.body);
+        } else {
+            pendingRoots.add(root);
+        }
+    }
+
+    function scheduleClean() {
+        if (!observing || cleanTimer !== null || document.hidden || pendingRoots.size === 0) return;
+        cleanTimer = setTimeout(() => {
+            cleanTimer = null;
+            // 合并父子区域；处理自身 DOM 写入时暂停监听，避免重复触发。
+            const roots = Array.from(pendingRoots).filter(root => root?.isConnected);
+            pendingRoots.clear();
+            withObserverPaused(() => {
+                roots.filter(root => !roots.some(other => other !== root && other.contains(root)))
+                    .forEach(root => cleanPage(root));
+                updateLoginRecovery();
+            });
+        }, 32);
+    }
+
+    function handleRouteChange() {
+        withObserverPaused(() => {
+            updateLoginRecovery();
+            lastLoginMode = isLoginPage();
+        });
+        queueRoot(document.body);
+        scheduleClean();
+    }
 
     function revealPage() {
-
-        if (
-            pageReady
-        ) {
-
-            return;
-
+        if (pageReady) return;
+        try {
+            withObserverPaused(() => cleanPage());
+        } finally {
+            pageReady = true;
+            clearTimeout(revealTimer);
+            clearTimeout(initialRevealTimer);
+            withObserverPaused(() => {
+                ensureShieldRemoved();
+                updateLoginRecovery();
+            });
         }
-
-
-        cleanPage();
-
-
-        // 再等两帧
-        requestAnimationFrame(
-            () => {
-
-                requestAnimationFrame(
-                    () => {
-
-                        cleanPage();
-
-
-                        const shield =
-                            document.getElementById(
-                                'agt-page-shield'
-                            );
-
-
-                        if (
-                            shield
-                        ) {
-
-                            shield.remove();
-
-                        }
-
-
-                        if (
-                            document.body
-                        ) {
-
-                            document.body
-                                .classList
-                                .remove(
-                                    'agt-page-loading'
-                                );
-
-                        }
-
-
-                        if (
-                            document.documentElement
-                        ) {
-
-                            document.documentElement
-                                .classList
-                                .remove(
-                                    'agt-page-loading'
-                                );
-
-                        }
-
-
-                        pageReady = true;
-
-                    }
-                );
-
-            }
-        );
-
     }
 
-
-    // ==================================================
-    // DOM 准备完成
-    // ==================================================
+    function resumePage() {
+        titleObserver.observe(document, titleObserverOptions);
+        cleanHeadBranding();
+        if (observing || !document.documentElement) return;
+        observing = true;
+        observer.observe(document.documentElement, observerOptions);
+        handleRouteChange();
+    }
 
     function initializePage() {
-
+        installPageProtection();
         showPageShield();
-
-        cleanPage();
-
-
-        // 给 Vue / Nuxt 一点时间完成首轮渲染
-        setTimeout(
-            () => {
-
-                revealPage();
-
-            },
-            80
-        );
-
+        withObserverPaused(() => cleanPage());
+        resumePage();
+        initialRevealTimer = setTimeout(() => {
+            requestAnimationFrame(() => requestAnimationFrame(revealPage));
+        }, 80);
+        // 隐藏窗口或页面处理异常时也有显示兜底，不会一直停留在白屏。
+        revealTimer = setTimeout(revealPage, 1000);
     }
 
-
-    // ==================================================
-    // 首次初始化
-    // ==================================================
-
-    if (
-        document.readyState ===
-        'loading'
-    ) {
-
-        document.addEventListener(
-            'DOMContentLoaded',
-            initializePage,
-            {
-                once: true
-            }
-        );
-
+    const titleObserverOptions = {
+        childList: true, subtree: true, characterData: true,
+        attributes: true, attributeFilter: ['content']
+    };
+    const titleObserver = new MutationObserver(records => {
+        if (!pageReady || !document.getElementById('agt-page-protection-style')) installPageProtection();
+        if (records.some(record => {
+            const element = record.target.nodeType === Node.ELEMENT_NODE ?
+                record.target : record.target.parentElement;
+            return record.target === document || !document.head || element === document.documentElement ||
+                element === document.head || element?.closest('head');
+        })) cleanHeadBranding();
+    });
+    // 直接监听 document，可在 html/head 尚未创建时开始，覆盖初次解析和 head 替换。
+    titleObserver.observe(document, titleObserverOptions);
+    cleanHeadBranding();
+    installPageProtection();
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', initializePage, { once: true });
     } else {
-
         initializePage();
-
     }
-
-
-    // ==================================================
-    // MutationObserver
-    // ==================================================
-    //
-    // 注意：
-    // 不再因为普通 DOM 变化重新显示页面遮罩。
-    // 否则登录失败弹窗、关闭弹窗、输入框变化等
-    // 都可能触发遮罩，导致输入框无法继续操作。
-    //
-    // 重要：在登录页面，完全跳过 MutationObserver 的 cleanPage 调用
-    // 避免弹窗关闭时破坏输入框，只依赖定时器清理。
-    // ==================================================
-
-    const observer =
-        new MutationObserver(
-            () => {
-
-                // 页面已经显示以后，
-                // 后续只负责执行页面清理。
-                //
-                // 不再调用：
-                // showPageShield()
-                // pageReady = false
-                // revealPage()
-                //
-                // 这样可以避免登录失败后输入框被遮罩挡住。
-
-                // 在登录页面，完全跳过 DOM 变化时的清理
-                // 避免弹窗关闭时破坏输入框
-                if (isLoginPage()) {
-
-                    // 只移除遮罩，不执行其他清理
-                    ensureShieldRemoved();
-
-                    return;
-
-                }
-
-                cleanPage();
-
-            }
-        );
-
-
-    function startObserver() {
-
-        if (
-            !document.documentElement
-        ) {
-
-            return;
-
-        }
-
-
-        // 在登录页面完全禁用 MutationObserver
-        // 只依赖定时器进行清理
-        if (isLoginPage()) {
-
-            console.log(
-                '登录页面：已禁用 MutationObserver，避免干扰输入框'
-            );
-
-            return;
-
-        }
-
-
-        observer.observe(
-            document.documentElement,
-            {
-                childList: true,
-                subtree: true
-            }
-        );
-    }
-
-    if (
-        document.readyState ===
-        'loading'
-    ) {
-
-        document.addEventListener(
-            'DOMContentLoaded',
-            startObserver,
-            {
-                once: true
-            }
-        );
-
-    } else {
-
-        startObserver();
-
-    }
-
-
-    // ==================================================
-    // 定时保险
-    //
-    // 每 2 秒执行一次页面清理，确保动态内容也被处理。
-    // 相比 1 秒执行一次，可以降低 CPU 使用率。
-    //
-    // 在登录页面，完全禁用定时清理，避免干扰输入框。
-    // ==================================================
-
-    if (!isLoginPage()) {
-
-        setInterval(
-            () => {
-
-                cleanPage();
-
-            },
-            2000
-        );
-
-    } else {
-
-        console.log(
-            '登录页面：已禁用定时清理，避免干扰输入框'
-        );
-
-    }
-
-
-    // ==================================================
-    // 禁止右键
-    // ==================================================
-
-    document.addEventListener(
-        'contextmenu',
-        event => {
-
+    window.addEventListener('pagehide', () => {
+        observing = false;
+        observer.disconnect();
+        titleObserver.disconnect();
+        clearTimeout(cleanTimer);
+        cleanTimer = null;
+        pendingRoots.clear();
+    });
+    window.addEventListener('pageshow', resumePage);
+    window.addEventListener('popstate', handleRouteChange);
+    window.addEventListener('hashchange', handleRouteChange);
+    ipcRenderer.on('agt:page-navigation', handleRouteChange);
+    document.addEventListener('visibilitychange', () => {
+        if (!document.hidden) scheduleClean();
+    });
+    document.addEventListener('pointerdown', restoreLoginKeyboardFocus, true);
+    document.addEventListener('keydown', restoreLoginKeyboardFocus, true);
+    document.addEventListener('submit', event => {
+        if (getLoginInputs().some(input => event.target.contains(input))) resetLoginRecovery();
+    }, true);
+    document.addEventListener('click', event => {
+        const button = event.target.closest?.('button, input[type="submit"], [role="button"]');
+        if (button && !button.closest('.el-message-box__wrapper, .el-dialog__wrapper, dialog') &&
+            (button.type === 'submit' || /登\s*录|log\s*in/i.test(button.textContent))) resetLoginRecovery();
+    }, true);
+    document.addEventListener('contextmenu', event => {
+        event.preventDefault();
+        event.stopPropagation();
+    }, true);
+    document.addEventListener('keydown', event => {
+        const key = event.key.toLowerCase();
+        if (!allowDevTools && (key === 'f12' ||
+            (event.ctrlKey && event.shiftKey && ['i', 'j', 'c'].includes(key)) ||
+            (event.ctrlKey && key === 'u'))) {
             event.preventDefault();
-
             event.stopPropagation();
-
-        },
-        true
-    );
-
-
-    // ==================================================
-    // 禁止开发者工具快捷键
-    // ==================================================
-
-    document.addEventListener(
-        'keydown',
-        event => {
-
-            const key =
-                event.key.toLowerCase();
-
-
-            // F12
-            if (
-                event.key ===
-                'F12'
-            ) {
-
-                event.preventDefault();
-
-                event.stopPropagation();
-
-                return false;
-
-            }
-
-
-            // Ctrl + Shift + I
-            if (
-                event.ctrlKey &&
-                event.shiftKey &&
-                key === 'i'
-            ) {
-
-                event.preventDefault();
-
-                event.stopPropagation();
-
-                return false;
-
-            }
-
-
-            // Ctrl + Shift + J
-            if (
-                event.ctrlKey &&
-                event.shiftKey &&
-                key === 'j'
-            ) {
-
-                event.preventDefault();
-
-                event.stopPropagation();
-
-                return false;
-
-            }
-
-
-            // Ctrl + U
-            if (
-                event.ctrlKey &&
-                key === 'u'
-            ) {
-
-                event.preventDefault();
-
-                event.stopPropagation();
-
-                return false;
-
-            }
-
-        },
-        true
-    );
-
-
+        }
+    }, true);
 })();

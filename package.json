@@ -1,17 +1,23 @@
 {
     "name": "anguantongguanbaodian",
-    "version": "1.0.3",
+    "version": "1.0.4",
     "description": "安管通关宝典",
     "main": "main.js",
     "author": "安管通关宝典",
     "scripts": {
         "start": "electron .",
+        "start:debug": "electron . --agt-devtools",
+        "test": "node --test tests/*.test.cjs",
+        "test:login": "node tests/run-electron-login.cjs",
+        "test:branding": "node tests/run-electron-login.cjs --branding",
+        "check:encoding": "node scripts/check-encoding.cjs",
         "release:prepare": "node build-release.js",
         "dist": "npm run release:prepare && electron-builder --win --config.directories.app=release-src"
     },
     "build": {
         "appId": "com.agt.kaoshi",
         "productName": "安管通关宝典",
+        "electronDist": "node_modules/electron/dist",
         "directories": {
             "output": "dist"
         },
@@ -45,6 +51,6 @@
     "devDependencies": {
         "electron": "^38.0.0",
         "electron-builder": "^26.15.3",
-        "javascript-obfuscator": "^4.1.1"
+        "javascript-obfuscator": "^5.5.0"
     }
 }
